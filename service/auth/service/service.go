@@ -1,0 +1,108 @@
+package service
+
+import (
+	"github.com/MamangRust/microservice-payment-gateway-grpc/pkg/adapter"
+	"github.com/MamangRust/microservice-payment-gateway-grpc/pkg/auth"
+	"github.com/MamangRust/microservice-payment-gateway-grpc/pkg/hash"
+	"github.com/MamangRust/microservice-payment-gateway-grpc/pkg/kafka"
+	"github.com/MamangRust/microservice-payment-gateway-grpc/pkg/logger"
+	mencache "github.com/MamangRust/microservice-payment-gateway-grpc/service/auth/redis"
+	"github.com/MamangRust/microservice-payment-gateway-grpc/service/auth/repository"
+	"github.com/MamangRust/microservice-payment-gateway-grpc/shared/cache"
+	"github.com/MamangRust/microservice-payment-gateway-grpc/shared/observability"
+)
+
+// Service aggregates authentication and identity-related services.
+type Service struct {
+	Login         LoginService
+	Register      RegistrationService
+	PasswordReset PasswordResetService
+	Identify      IdentifyService
+}
+
+// Deps defines dependencies required to initialize Service.
+type Deps struct {
+	Cache        *cache.CacheStore
+	Repositories *repository.Repositories
+	Token        auth.TokenManager
+	Hash         hash.HashPassword
+	Logger       logger.LoggerInterface
+	Kafka        *kafka.Kafka
+	UserAdapter     adapter.AuthUserAdapter
+	RoleAdapter     adapter.RoleAdapter
+	UserRoleAdapter adapter.UserRoleAdapter
+}
+
+// NewService initializes and returns the core authentication service bundle.
+func NewService(deps *Deps) *Service {
+	observability, _ := observability.NewObservability("auth-server", deps.Logger)
+
+	cache := mencache.NewMencache(deps.Cache)
+
+	tokenService := NewTokenService(&tokenServiceDeps{
+		Token:         deps.Token,
+		RefreshToken:  deps.Repositories.RefreshToken,
+		Logger:        deps.Logger,
+		Observability: observability,
+	})
+
+	return &Service{
+		Login:         newLogin(deps, tokenService, observability, cache.LoginCache),
+		Register:      newRegister(deps, observability, cache.RegisterCache),
+		PasswordReset: newPasswordReset(deps, observability, cache.PasswordResetCache),
+		Identify:      newIdentity(deps, tokenService, observability, cache.IdentityCache),
+	}
+}
+
+// newLogin initializes and returns the LoginService.
+func newLogin(deps *Deps, tokenService *tokenService, observability observability.TraceLoggerObservability, cache mencache.LoginCache) LoginService {
+	return NewLoginService(&LoginServiceDeps{
+		Cache:          cache,
+		Logger:         deps.Logger,
+		Hash:           deps.Hash,
+		UserAdapter:    deps.UserAdapter,
+		RefreshToken:   deps.Repositories.RefreshToken,
+		Token:          deps.Token,
+		TokenService:   tokenService,
+		Observability:  observability,
+	})
+}
+
+// newRegister initializes and returns the RegistrationService.
+func newRegister(deps *Deps, observability observability.TraceLoggerObservability, cache mencache.RegisterCache) RegistrationService {
+	return NewRegisterService(&RegisterServiceDeps{
+		Cache:          cache,
+		User:           deps.UserAdapter,
+		RoleAdapter:    deps.RoleAdapter,
+		UserRoleAdapter: deps.UserRoleAdapter,
+		Hash:           deps.Hash,
+		Kafka:          deps.Kafka,
+		Logger:         deps.Logger,
+		Observability:  observability,
+	})
+}
+
+// newPasswordReset initializes the reset forgot password, reset password and verify code services.
+func newPasswordReset(deps *Deps, observability observability.TraceLoggerObservability, cache mencache.PasswordResetCache) PasswordResetService {
+	return NewPasswordResetService(&PasswordResetServiceDeps{
+		Cache:         cache,
+		Kafka:         deps.Kafka,
+		Logger:        deps.Logger,
+		User:          deps.UserAdapter,
+		ResetToken:    deps.Repositories.ResetToken,
+		Observability: observability,
+	})
+}
+
+// newIdentity initializes the IdentifyService for identity verification and token refresh.
+func newIdentity(deps *Deps, tokenService *tokenService, observability observability.TraceLoggerObservability, cache mencache.IdentityCache) IdentifyService {
+	return NewIdentityService(&IdentityServiceDeps{
+		Cache:         cache,
+		Token:         deps.Token,
+		RefreshToken:  deps.Repositories.RefreshToken,
+		User:          deps.UserAdapter,
+		Logger:        deps.Logger,
+		TokenService:  tokenService,
+		Observability: observability,
+	})
+}
